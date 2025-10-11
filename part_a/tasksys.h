@@ -14,14 +14,14 @@ class ThreadSafeQueue {
     std::queue<T> q;
 
     public:
-        ThreadSafeQueue(T sentinel) {
-            this->sentinel = sentinel;
+        ThreadSafeQueue(T sentinel) : sentinel(sentinel) {
+            size = 0;
         };
 
         T pop() {
             unique_lock<mutex> lock(mtx);
 
-            while (size != 0) {
+            while (size == 0) {
                 cv.wait(lock);
             }
 
@@ -45,7 +45,7 @@ class ThreadSafeQueue {
             q.push(data);
             size++;
             if (size == 1) {
-                cv.notify_one();
+                cv.notify_all();
             }
             mtx.unlock();
         }
@@ -117,13 +117,36 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * itasksys.h for documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
-    ThreadSafeQueue<int> q;
-    int num_threads;
     public:
+        struct SleepingTask {
+            IRunnable* runnable;
+            int idx;
+            int num_total_tasks;
+
+            SleepingTask(IRunnable* runnable, int idx, int num_total_tasks) {
+                this->runnable = runnable;
+                this->idx = idx;
+                this->num_total_tasks = num_total_tasks;
+            }
+
+            bool operator==(SleepingTask& a) {
+                return a.runnable == this->runnable && a.idx == this->idx && a.num_total_tasks == this->num_total_tasks;
+            }
+        };
+    private:
+    ThreadSafeQueue<SleepingTask> q;
+    int num_threads;
+    thread* threads;
+
+    mutex mtx;
+    condition_variable cv;
+    atomic<int> counter;
+    public:
+
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
         const char* name();
-        static void thread_fn(TaskSystemParallelThreadPoolSleeping* self, IRunnable* runnable, int num_total_tasks);
+        static void thread_fn(TaskSystemParallelThreadPoolSleeping* self);
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
