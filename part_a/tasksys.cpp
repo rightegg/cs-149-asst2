@@ -60,6 +60,12 @@ TaskSystemParallelSpawn::TaskSystemParallelSpawn(int num_threads): ITaskSystem(n
 
 TaskSystemParallelSpawn::~TaskSystemParallelSpawn() {}
 
+void TaskSystemParallelSpawn::thread_fn(IRunnable* runnable, int thread_id, int num_threads, int num_total_tasks) {
+    for (int i = thread_id; i < num_total_tasks; i += num_threads) {
+        runnable->runTask(i, num_total_tasks);
+    }
+}
+
 void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
 
 
@@ -70,11 +76,12 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
     //
     thread threads[num_threads];
 
-    
-    
+    for (int i =0 ; i < num_threads; i++) {
+        threads[i] = thread(TaskSystemParallelSpawn::thread_fn, runnable, i, num_threads, num_total_tasks);
+    }
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    for (int i = 0; i < num_threads; i++) {
+        threads[i].join();
     }
 }
 
