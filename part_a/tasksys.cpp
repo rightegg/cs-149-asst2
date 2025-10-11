@@ -113,6 +113,27 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    for (int i = 0; i < num_threads; i++) {
+        workers.emplace_back([this] {
+            while (true) {
+                function<void()> job;
+                {
+                    unique_lock<mutex> lock(this->mut);
+                    this->cv.wait(lock, [this] {
+                        return !this->jobs.empty();
+                    });
+
+                    if (this->jobs.empty()) {
+                        return;
+                    }
+
+                    job = move(this->jobs.front());
+                    this->jobs.pop();
+                }
+                job();
+            }
+        });
+    }
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {}
@@ -128,7 +149,16 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
 
     for (int i = 0; i < num_total_tasks; i++) {
         runnable->runTask(i, num_total_tasks);
+
+        {
+            unique_lock<mutex> lock(mut);
+            jobs.push(runnable->runTask(i, num_total_tasks));
+        }
+
+        cv.notify_one();
     }
+
+    ;
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
