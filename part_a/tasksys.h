@@ -5,6 +5,52 @@
 #include <bits/stdc++.h>
 using namespace std;
 
+template <typename T>
+class ThreadSafeQueue {
+    mutex mtx;
+    condition_variable cv;
+    int size;
+    T sentinel;
+    std::queue<T> q;
+
+    public:
+        ThreadSafeQueue(T sentinel) {
+            this->sentinel = sentinel;
+        };
+
+        T pop() {
+            unique_lock<mutex> lock(mtx);
+
+            while (size != 0) {
+                cv.wait(lock);
+            }
+
+            size--;
+
+            T ret = move(q.front());
+            q.pop();
+
+            if (ret == sentinel) {
+                size++;
+                q.push(sentinel);
+                cv.notify_one();
+            }
+
+            lock.unlock();
+            return ret;
+        }
+
+        void push(T data) {
+            mtx.lock();
+            q.push(data);
+            size++;
+            if (size == 1) {
+                cv.notify_one();
+            }
+            mtx.unlock();
+        }
+};
+
 /*
  * TaskSystemSerial: This class is the student's implementation of a
  * serial task execution engine.  See definition of ITaskSystem in
@@ -71,10 +117,13 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * itasksys.h for documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
+    ThreadSafeQueue<int> q;
+    int num_threads;
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
         const char* name();
+        static void thread_fn(TaskSystemParallelThreadPoolSleeping* self, IRunnable* runnable, int num_total_tasks);
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
