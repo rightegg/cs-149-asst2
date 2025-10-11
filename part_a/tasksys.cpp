@@ -107,40 +107,72 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
 }
 
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
-    // this->done_pushing = false;
-    // for (int i = 0; i < num_threads; i++) {
-    //     workers.emplace_back([this] {
-    //         int j = 0;
-    //         while (true) {
-    //             function<void()> job;
-    //             {
-    //                 unique_lock<mutex> lock(this->mut);
-    //                 this->cv.wait(lock, [this] {
-    //                     return this->done_pushing || !this->jobs.empty();
-    //                 });
+    done_pushing = true;
+    run_ended = program_done = false;
+    for (int i = 0; i < num_threads; i++) {
+        workers.emplace_back([this, i] {
+            while (true) {
+                {
+                    unique_lock<mutex> lock(this->mut);
+                    this->run_start.wait(lock, [this] {
+                        return !this->done_pushing || this->program_done;
+                    });
+                }
 
-    //                 if (this->done_pushing && this->jobs.empty()) {
-    //                     return;
-    //                 }
+                if (this->program_done) {
+                    return;
+                }
 
-    //                 job = move(this->jobs.front());
-    //                 this->jobs.pop();
-    //             }
-    //             job();
-    //         }
-    //     });
-    // }
+                while (true) {
+                    function<void()> job;
+                    {
+                        unique_lock<mutex> lock(this->mut);
+                        this->cv.wait(lock, [this] {
+                            return this->done_pushing || !this->jobs.empty();
+                        });
+
+                        if (this->done_pushing && this->jobs.empty()) {
+                            if (!run_ended) {
+                                run_ended = true;
+                                run_end.notify_one();
+                            }
+
+                            break;
+                        }
+
+                        job = move(this->jobs.front());
+                        this->jobs.pop();
+                    }
+                    cout << "running job on thread " << i << endl;
+                    job();
+                    cout << "finished job on thread " << i << endl;
+                }
+            }
+        });
+    }
 }
 
-TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {}
+TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    {
+        unique_lock<mutex> lock(mut);
+        program_done = true;
+    }
+    run_start.notify_all();
+
+    for (thread &worker : workers) {
+        worker.join();
+    }
+    cout << "all workers done" << endl;
+}
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
+    cout << "function called with " << num_total_tasks << " tasks"  << endl;
+    {
+        unique_lock<mutex> lock(mut);
+        done_pushing = run_ended = false;
+    }
+
+    run_start.notify_all();
     for (int i = 0; i < num_total_tasks; i++) {
         runnable->runTask(i, num_total_tasks);
     }
@@ -149,9 +181,10 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     for (int i = 0; i < num_total_tasks; i++) {
         {
             unique_lock<mutex> lock(mut);
-            jobs.push([this, &runnable, i, num_total_tasks] {
+            jobs.push([this, runnable, i, num_total_tasks] {
                 runnable->runTask(i, num_total_tasks);
             });
+            cout << "pushed job " << i << endl;
         }
 
         cv.notify_one();
@@ -161,11 +194,15 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
         unique_lock<mutex> lock(mut);
         done_pushing = true;
     }
-    cv.notify_all();
 
-    for (thread &worker : workers) {
-        worker.join();
+    {
+        unique_lock<mutex> lock(mut);
+        run_end.wait(lock, [this] {
+            return this->run_ended;
+        });
     }
+
+    cout << "function done!" << endl;
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

@@ -103,9 +103,9 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         void sync();
 
     private:
-        bool done_pushing;
+        bool done_pushing, run_ended, program_done;
         mutex mut;
-        condition_variable cv;
+        condition_variable cv, run_start, run_end;
         vector<thread> workers;
         queue<function<void()>> jobs;
 };
