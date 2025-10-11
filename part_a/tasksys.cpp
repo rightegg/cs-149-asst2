@@ -113,17 +113,19 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    this->done_pushing = false;
     for (int i = 0; i < num_threads; i++) {
         workers.emplace_back([this] {
+            int j = 0;
             while (true) {
                 function<void()> job;
                 {
                     unique_lock<mutex> lock(this->mut);
                     this->cv.wait(lock, [this] {
-                        return !this->jobs.empty();
+                        return this->done_pushing || !this->jobs.empty();
                     });
 
-                    if (this->jobs.empty()) {
+                    if (this->done_pushing && this->jobs.empty()) {
                         return;
                     }
 
@@ -139,26 +141,26 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {}
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
-
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Part A.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
     for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-
         {
             unique_lock<mutex> lock(mut);
-            jobs.push(runnable->runTask(i, num_total_tasks));
+            jobs.push([this, &runnable, i, num_total_tasks] {
+                runnable->runTask(i, num_total_tasks);
+            });
         }
 
         cv.notify_one();
     }
 
-    ;
+    {
+        unique_lock<mutex> lock(mut);
+        done_pushing = true;
+    }
+    cv.notify_all();
+
+    for (thread &worker : workers) {
+        worker.join();
+    }
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

@@ -57,6 +57,7 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         void sync();
 
     private:
+        bool done_pushing;
         mutex mut;
         condition_variable cv;
         vector<thread> workers;
