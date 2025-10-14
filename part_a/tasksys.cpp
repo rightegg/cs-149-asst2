@@ -19,7 +19,7 @@ const char* TaskSystemSerial::name() {
 TaskSystemSerial::TaskSystemSerial(int num_threads): ITaskSystem(num_threads) {
 }
 
-TaskSystemSerial::~TaskSystemSerial() {}
+TaskSystemSerial::~TaskSystemSerial() {cout<<"SERIAL DONE"<<endl;}
 
 void TaskSystemSerial::run(IRunnable* runnable, int num_total_tasks) {
     for (int i = 0; i < num_total_tasks; i++) {
@@ -58,7 +58,7 @@ TaskSystemParallelSpawn::TaskSystemParallelSpawn(int num_threads): ITaskSystem(n
     this->num_threads = num_threads;
 }
 
-TaskSystemParallelSpawn::~TaskSystemParallelSpawn() {}
+TaskSystemParallelSpawn::~TaskSystemParallelSpawn() {cout<<"PARALLEL DONE"<<endl;}
 
 void TaskSystemParallelSpawn::thread_fn(IRunnable* runnable, int thread_id, int num_threads, int num_total_tasks) {
     for (int i = thread_id; i < num_total_tasks; i += num_threads) {
@@ -145,6 +145,9 @@ TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
     for (thread &worker : workers) {
         worker.join();
     }
+    workers.clear();
+
+    cout << "SPINNING DONE" << endl;
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
@@ -216,6 +219,7 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     }
 
     delete[] threads;
+    cout<<"SLEEPING DONE"<<endl;
 }
 
 void TaskSystemParallelThreadPoolSleeping::thread_fn(TaskSystemParallelThreadPoolSleeping* self) {
