@@ -109,7 +109,7 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         };
 
     private:
-        bool program_done;
+        atomic<bool> program_done;
         atomic<int> counter;
         mutex mut;
         condition_variable cv;

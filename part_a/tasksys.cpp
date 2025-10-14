@@ -106,33 +106,33 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
     return "Parallel + Thread Pool + Spin";
 }
 
-TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
-    program_done = false;
+TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads), program_done(false) {
     for (int i = 0; i < num_threads; i++) {
-        workers.emplace_back([this, i] {
-            while (true) {
+        workers.emplace_back([this] {
+            while (!this->program_done) {
                 Task job;
+                bool found_job = false;
+
                 {
                     unique_lock<mutex> lock(this->mut);
-                    if (program_done) {
-                        return;
-                    }
-
-                    if (!this->jobs.empty()) {
-                        job = move(this->jobs.front());
-                        this->jobs.pop();
-                    } else {
-                        continue;
+                    if (!jobs.empty()) {
+                        job = move(jobs.front());
+                        jobs.pop();
+                        found_job = true;
                     }
                 }
 
-                job.runnable->runTask(job.idx, job.num_total_tasks);
+                if (found_job) {
+                    job.runnable->runTask(job.idx, job.num_total_tasks);
 
-                {
-                    unique_lock<mutex> lock(this->mut);
-                    if (this->counter.fetch_sub(1) == 1) {
-                        this->cv.notify_one();
+                    {
+                        unique_lock<mutex> lock(this->mut);
+                        if (this->counter.fetch_sub(1) == 1) {
+                            this->cv.notify_one();
+                        }
                     }
+                } else {
+                    this_thread::yield();
                 }
             }
         });
@@ -140,10 +140,7 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
-    {
-        unique_lock<mutex> lock(mut);
-        program_done = true;
-    }
+    program_done = true;
 
     for (thread &worker : workers) {
         worker.join();
@@ -151,21 +148,20 @@ TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
-    counter.store(num_total_tasks);
-    for (int i = 0; i < num_total_tasks; i++) {
-        {
-            unique_lock<mutex> lock(mut);
+    {
+        unique_lock<mutex> lock(mut);
+
+        counter.store(num_total_tasks);
+        for (int i = 0; i < num_total_tasks; i++) {
             jobs.push({runnable, i, num_total_tasks});
         }
     }
 
-    {
-        unique_lock<mutex> lock(mut);
-        if (counter.load() != 0) {
-            cv.wait(lock, [this] {
-                return this->counter.load() == 0;
-            });
-        }
+    unique_lock<mutex> lock(mut);
+    if (counter.load() != 0) {
+        cv.wait(lock, [this] {
+            return this->counter.load() == 0;
+        });
     }
 }
 
