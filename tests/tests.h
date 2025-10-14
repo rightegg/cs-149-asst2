@@ -528,7 +528,9 @@ TestResults simpleTest(ITaskSystem* t, bool do_async) {
         std::vector<TaskID> secondDeps;
         secondDeps.push_back(first_task_id);
         t->runAsyncWithDeps(&second, num_tasks, secondDeps);
+        cout << "SYNCING!!!!!" << endl;
         t->sync();
+        cout << "BIGGITY"  << endl;
     } else {
         t->run(&first, num_tasks);
         t->run(&second, num_tasks);
@@ -555,7 +557,7 @@ TestResults simpleTest(ITaskSystem* t, bool do_async) {
     results.time = end_time - start_time;
 
     delete [] array;
-
+    cout << "returning" << endl;
     return results;
 }
 
