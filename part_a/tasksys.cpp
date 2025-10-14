@@ -157,15 +157,15 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
             unique_lock<mutex> lock(mut);
             jobs.push({runnable, i, num_total_tasks});
         }
-
-        cv.notify_one();
     }
 
     {
         unique_lock<mutex> lock(mut);
-        cv.wait(lock, [this] {
-            return this->counter.load() == 0;
-        });
+        if (counter.load() != 0) {
+            cv.wait(lock, [this] {
+                return this->counter.load() == 0;
+            });
+        }
     }
 }
 
