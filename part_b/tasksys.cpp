@@ -1,4 +1,5 @@
 #include "tasksys.h"
+#include "CycleTimer.h"
 
 
 IRunnable::~IRunnable() {}
@@ -127,6 +128,7 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
 }
 
 #define cout cout << "[" << this_thread::get_id() << "] "
+#define now() CycleTimer::currentSeconds()
 
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), program_done(false), job_counter(0), current_id(0) {
     for (int i = 0; i < num_threads; i++) {
@@ -134,52 +136,50 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
             vector<Task> to_push;
             while (true) {
                 Task job;
+                bool push = !to_push.empty();
+
                 {
                     unique_lock<mutex> lock(main_mutex);
                     if (job_counter.load() == 0) {
                         jobs_done_cv.notify_one();
                     }
 
-                    queue_empty_cv.wait(lock, [this] {
-                        return program_done || !jobs.empty();
-                    });
+                    if (push) {
+                        for (Task job : to_push) {
+                            for (int i = 0; i < job.num_total_tasks; i++) {
+                                jobs.push({job.runnable, i, job.num_total_tasks, job.id});
+                            }
+                        }
+                        to_push.clear();
+                    } else {
+                        queue_empty_cv.wait(lock, [this] {
+                            return program_done || !jobs.empty();
+                        });
 
-                    if (program_done && jobs.empty()) {
-                        return;
+                        if (program_done && jobs.empty()) {
+                            return;
+                        }
                     }
 
-                    // cout << "job size: " << jobs.size() << endl;
                     job = move(jobs.front());
                     jobs.pop();
                 }
 
-                // cout << "started task " << job.id << ", idx " << job.idx << endl;
-                job.runnable->runTask(job.idx, job.num_total_tasks);
-                // cout << "ended task " << job.id << ", idx " << job.idx << endl;
+                if (push) {
+                    queue_empty_cv.notify_all();
+                }
 
+                job.runnable->runTask(job.idx, job.num_total_tasks);
                 job_counter.fetch_sub(1);
-                // cout << "now we have " << job_counter << " remaining jobs" << endl;
-                // cout << "we also have " << jobs.size() << " remaining tasks" << endl;
 
                 {
                     unique_lock<mutex> lock(dep_mutex);
 
                     TaskID id = job.id;
                     if (--jobs_left[id] == 0) {
-                        // cout << "done with " << id << endl;
                         for (TaskID child : dependencies[id]) {
-                            // cout << "child " << child << " with " << remaining_dependencies[child] << "endl";
                             if (--remaining_dependencies[child] == 0) {
-                                {
-                                    unique_lock<mutex> main_lock(main_mutex);
-
-                                    Task child_job = tasks[child];
-                                    for (int i = 0; i < child_job.num_total_tasks; i++) {
-                                        jobs.push({child_job.runnable, i, child_job.num_total_tasks, child_job.id});
-                                    }
-                                }
-                                queue_empty_cv.notify_all();
-                                // cout << "pushed " << child << endl;
+                                to_push.push_back(tasks[child]);
                             }
                         }
                     }
@@ -191,17 +191,12 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    // cout << "Destroying..." << endl;
-
     program_done = true;
     queue_empty_cv.notify_all();
 
     for (thread &worker : workers) {
         worker.join();
     }
-    workers.clear();
-
-    // cout << "Destroyed" << endl;
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
@@ -212,10 +207,9 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
-
     TaskID id = current_id++;
-
     bool can_start = true;
+
     {
         unique_lock<mutex> lock(dep_mutex);
         jobs_left.push_back(num_total_tasks);
@@ -226,8 +220,8 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
         for (TaskID parent : deps) {
             if (jobs_left[parent] > 0) {
                 dependencies[parent].push_back(id);
-                can_start = false;
                 remaining_dependencies[id]++;
+                can_start = false;
             }
         }
     }
@@ -246,17 +240,13 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     if (can_start) {
         queue_empty_cv.notify_all();
     }
-    // cout << "processed task " << id << " " << deps.size() << endl;
 
     return id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-    // cout << "waiting to sync..." << endl;
-
     unique_lock<mutex> lock(main_mutex);
     jobs_done_cv.wait(lock, [this] {
         return job_counter.load() == 0;
     });
-    // cout << "done syncing!" << endl;
 }
