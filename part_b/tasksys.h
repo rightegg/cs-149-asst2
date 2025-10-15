@@ -84,12 +84,12 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     private:
         atomic<bool> program_done, syncing;
         atomic<int> job_counter;
-        mutex mut;
+        mutex main_mutex, dep_mutex;
         condition_variable jobs_done_cv, queue_empty_cv;
         vector<thread> workers;
         queue<Task> jobs;
 
-        TaskID current_id;
+        atomic<TaskID> current_id;
         vector<int> jobs_left;
         vector<int> remaining_dependencies;
         vector<vector<TaskID>> dependencies;

@@ -134,7 +134,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
             while (true) {
                 Task job;
                 {
-                    unique_lock<mutex> lock(mut);
+                    unique_lock<mutex> lock(main_mutex);
                     if (syncing && job_counter == 0) {
                         syncing = false;
                         jobs_done_cv.notify_one();
@@ -151,14 +151,6 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                     // cout << "job size: " << jobs.size() << endl;
                     job = move(jobs.front());
                     jobs.pop();
-
-                    if (job.idx == -1) {
-                        for (int i = 0; i < job.num_total_tasks; i++) {
-                            jobs.push({job.runnable, i, job.num_total_tasks, job.id});
-                        }
-                        // cout << "queued " << job.id << endl;
-                        continue;
-                    }
                 }
 
                 // cout << "started task " << job.id << ", idx " << job.idx << endl;
@@ -174,13 +166,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                 // cout << "we also have " << jobs.size() << " remaining tasks" << endl;
 
                 {
-                    unique_lock<mutex> lock(mut);
-                    for (int i = 0; i < current_id; i++) {
-                        if (jobs_left[i] > 0 && i == 256) {
-                             // cout << "job " << i << " still has " << jobs_left[i] << " tasks";
-                             // cout << " and " << remaining_dependencies[i] << " deps" << endl;
-                        }
-                    }
+                    unique_lock<mutex> lock(dep_mutex);
 
                     TaskID id = job.id;
                     if (--jobs_left[id] == 0) {
@@ -188,7 +174,15 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                         for (TaskID child : dependencies[id]) {
                             // cout << "child " << child << " with " << remaining_dependencies[child] << "endl";
                             if (--remaining_dependencies[child] == 0) {
-                                jobs.push(tasks[child]);
+                                {
+                                    unique_lock<mutex> main_lock(main_mutex);
+
+                                    Task child_job = tasks[child];
+                                    for (int i = 0; i < child_job.num_total_tasks; i++) {
+                                        jobs.push({child_job.runnable, i, child_job.num_total_tasks, child_job.id});
+                                    }
+                                    queue_empty_cv.notify_all();
+                                }
                                 // cout << "pushed " << child << endl;
                             }
                         }
@@ -222,29 +216,37 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
-    unique_lock<mutex> lock(mut);
 
     TaskID id = current_id++;
-    jobs_left.push_back(num_total_tasks);
-    remaining_dependencies.push_back(0);
-    dependencies.push_back({});
-    tasks.push_back({runnable, -1, num_total_tasks, id});
-    job_counter += num_total_tasks;
 
     bool can_start = true;
-    for (TaskID parent : deps) {
-        if (jobs_left[parent] > 0) {
-            dependencies[parent].push_back(id);
-            can_start = false;
-            remaining_dependencies[id]++;
+    {
+        unique_lock<mutex> lock(dep_mutex);
+        jobs_left.push_back(num_total_tasks);
+        remaining_dependencies.push_back(0);
+        dependencies.push_back({});
+        tasks.push_back({runnable, -1, num_total_tasks, id});
+
+        for (TaskID parent : deps) {
+            if (jobs_left[parent] > 0) {
+                dependencies[parent].push_back(id);
+                can_start = false;
+                remaining_dependencies[id]++;
+            }
         }
     }
 
-    if (can_start) {
-        jobs.push(tasks.back());
-        queue_empty_cv.notify_one();
-    }
+    {
+        unique_lock<mutex> lock(main_mutex);
+        job_counter += num_total_tasks;
 
+        if (can_start) {
+            for (int i = 0; i < num_total_tasks; i++) {
+                jobs.push({runnable, i, num_total_tasks, id});
+            }
+            queue_empty_cv.notify_all();
+        }
+    }
 
     // cout << "processed task " << id << " " << deps.size() << endl;
 
@@ -257,7 +259,7 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
 
     // cout << "waiting to sync..." << endl;
 
-    unique_lock<mutex> lock(mut);
+    unique_lock<mutex> lock(main_mutex);
     jobs_done_cv.wait(lock, [this] {
         return !syncing;
     });
