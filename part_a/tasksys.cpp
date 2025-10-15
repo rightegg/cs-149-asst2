@@ -189,10 +189,12 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
         workers.emplace_back([this] {
             while (true) {
                 Task job;
-                bool last_task = false;
-
                 {
                     unique_lock<mutex> lock(mut);
+                    if (counter == 0) {
+                        jobs_done_cv.notify_one();
+                    }
+
                     queue_empty_cv.wait(lock, [this] {
                         return program_done || !jobs.empty();
                     });
@@ -203,14 +205,10 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
                     job = move(jobs.front());
                     jobs.pop();
-
-                    last_task = counter.fetch_sub(1) == 1;
                 }
 
                 job.runnable->runTask(job.idx, job.num_total_tasks);
-                if (last_task) {
-                    jobs_done_cv.notify_one();
-                }
+                counter.fetch_sub(1);
             }
         });
     }
