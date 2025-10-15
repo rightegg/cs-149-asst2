@@ -109,12 +109,12 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads), program_done(false) {
     for (int i = 0; i < num_threads; i++) {
         workers.emplace_back([this] {
-            while (!this->program_done) {
+            while (!program_done) {
                 Task job;
                 bool found_job = false;
 
                 {
-                    unique_lock<mutex> lock(this->mut);
+                    unique_lock<mutex> lock(mut);
                     if (!jobs.empty()) {
                         job = move(jobs.front());
                         jobs.pop();
@@ -126,9 +126,9 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
                     job.runnable->runTask(job.idx, job.num_total_tasks);
 
                     {
-                        unique_lock<mutex> lock(this->mut);
-                        if (this->counter.fetch_sub(1) == 1) {
-                            this->cv.notify_one();
+                        unique_lock<mutex> lock(mut);
+                        if (counter.fetch_sub(1) == 1) {
+                            cv.notify_one();
                         }
                     }
                 } else {
@@ -158,11 +158,9 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     }
 
     unique_lock<mutex> lock(mut);
-    if (counter.load() != 0) {
-        cv.wait(lock, [this] {
-            return this->counter.load() == 0;
-        });
-    }
+    cv.wait(lock, [this] {
+        return counter.load() == 0;
+    });
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -186,74 +184,64 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), q(SleepingTask(NULL, -1, 0)) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), program_done(false) {
+    for (int i = 0; i < num_threads; i++) {
+        workers.emplace_back([this] {
+            while (true) {
+                Task job;
+                bool last_task = false;
 
-    this->num_threads = num_threads;
-    threads = new thread[num_threads];
-    for (int i =0 ; i < num_threads; i++) {
-        threads[i] = thread(thread_fn, this);
+                {
+                    unique_lock<mutex> lock(mut);
+                    queue_empty_cv.wait(lock, [this] {
+                        return program_done || !jobs.empty();
+                    });
+
+                    if (program_done && jobs.empty()) {
+                        return;
+                    }
+
+                    job = move(jobs.front());
+                    jobs.pop();
+
+                    last_task = counter.fetch_sub(1) == 1;
+                }
+
+                job.runnable->runTask(job.idx, job.num_total_tasks);
+                if (last_task) {
+                    jobs_done_cv.notify_one();
+                }
+            }
+        });
     }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    //
-    // TODO: CS149 student implementations may decide to perform cleanup
-    // operations (such as thread pool shutdown construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+    program_done = true;
+    queue_empty_cv.notify_all();
 
-    q.push(SleepingTask(NULL, -1, 0));
-
-    for (int i = 0; i < num_threads; i++) {
-        threads[i].join();
+    for (thread &worker : workers) {
+        worker.join();
     }
-
-    delete[] threads;
-}
-
-void TaskSystemParallelThreadPoolSleeping::thread_fn(TaskSystemParallelThreadPoolSleeping* self) {
-    while (true) {
-        SleepingTask val = self->q.pop();
-
-        if (val.runnable == NULL) {
-            return;
-        }
-
-        val.runnable->runTask(val.idx, val.num_total_tasks);
-
-        if (self->counter.fetch_sub(1) == 1) {
-            self->cv.notify_one();
-        }
-    }
+    workers.clear();
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
 
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Parts A and B.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
     counter.store(num_total_tasks);
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        q.push(SleepingTask(runnable, i, num_total_tasks));
+    {
+        unique_lock<mutex> lock(mut);
+        for (int i = 0; i < num_total_tasks; i++) {
+            jobs.push({runnable, i, num_total_tasks});
+        }
     }
+    queue_empty_cv.notify_all();
 
-    unique_lock<mutex> lock(mtx);
+    unique_lock<mutex> lock(mut);
+    jobs_done_cv.wait(lock, [this] {
+        return counter.load() == 0;
+    });
 
-    while (counter.load() != 0) {
-        cv.wait(lock);
-    }
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
