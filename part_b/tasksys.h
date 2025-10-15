@@ -82,7 +82,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         };
 
     private:
-        atomic<bool> program_done, syncing;
+        atomic<bool> program_done;
         atomic<int> job_counter;
         mutex main_mutex, dep_mutex;
         condition_variable jobs_done_cv, queue_empty_cv;

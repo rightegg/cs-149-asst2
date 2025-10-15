@@ -128,15 +128,15 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
 
 #define cout cout << "[" << this_thread::get_id() << "] "
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), program_done(false), syncing(false), job_counter(0), current_id(0) {
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), program_done(false), job_counter(0), current_id(0) {
     for (int i = 0; i < num_threads; i++) {
         workers.emplace_back([this] {
+            vector<Task> to_push;
             while (true) {
                 Task job;
                 {
                     unique_lock<mutex> lock(main_mutex);
-                    if (syncing && job_counter == 0) {
-                        syncing = false;
+                    if (job_counter.load() == 0) {
                         jobs_done_cv.notify_one();
                     }
 
@@ -154,10 +154,6 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                 }
 
                 // cout << "started task " << job.id << ", idx " << job.idx << endl;
-                if (job.runnable == nullptr) {
-                    // cout << "!!! Task " << job.id << ", idx " << job.idx << " is bad" << endl;
-                    assert(false);
-                }
                 job.runnable->runTask(job.idx, job.num_total_tasks);
                 // cout << "ended task " << job.id << ", idx " << job.idx << endl;
 
@@ -181,8 +177,8 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                                     for (int i = 0; i < child_job.num_total_tasks; i++) {
                                         jobs.push({child_job.runnable, i, child_job.num_total_tasks, child_job.id});
                                     }
-                                    queue_empty_cv.notify_all();
                                 }
+                                queue_empty_cv.notify_all();
                                 // cout << "pushed " << child << endl;
                             }
                         }
@@ -244,24 +240,23 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
             for (int i = 0; i < num_total_tasks; i++) {
                 jobs.push({runnable, i, num_total_tasks, id});
             }
-            queue_empty_cv.notify_all();
         }
     }
 
+    if (can_start) {
+        queue_empty_cv.notify_all();
+    }
     // cout << "processed task " << id << " " << deps.size() << endl;
 
     return id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-    syncing = true;
-    queue_empty_cv.notify_all();
-
     // cout << "waiting to sync..." << endl;
 
     unique_lock<mutex> lock(main_mutex);
     jobs_done_cv.wait(lock, [this] {
-        return !syncing;
+        return job_counter.load() == 0;
     });
     // cout << "done syncing!" << endl;
 }
