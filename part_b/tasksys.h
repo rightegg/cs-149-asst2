@@ -6,52 +6,6 @@
 
 using namespace std;
 
-template <typename T>
-class ThreadSafeQueue {
-    mutex mtx;
-    condition_variable cv;
-    int size;
-    T sentinel;
-    std::queue<T> q;
-
-    public:
-        ThreadSafeQueue(T sentinel) : sentinel(sentinel) {
-            size = 0;
-        };
-
-        T pop() {
-            unique_lock<mutex> lock(mtx);
-
-            while (size == 0) {
-                cv.wait(lock);
-            }
-
-            size--;
-
-            T ret = move(q.front());
-            q.pop();
-
-            if (ret == sentinel) {
-                size++;
-                q.push(sentinel);
-                cv.notify_one();
-            }
-
-            lock.unlock();
-            return ret;
-        }
-
-        void push(T data) {
-            mtx.lock();
-            q.push(data);
-            size++;
-            if (size == 1) {
-                cv.notify_all();
-            }
-            mtx.unlock();
-        }
-};
-
 /*
  * TaskSystemSerial: This class is the student's implementation of a
  * serial task execution engine.  See definition of ITaskSystem in
@@ -110,57 +64,6 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     public:
-        struct SleepingTask {
-            IRunnable* runnable;
-            int idx;
-            int num_total_tasks;
-            int taskid;
-
-            SleepingTask(IRunnable* runnable, int idx, int num_total_tasks, int taskid) {
-                this->runnable = runnable;
-                this->idx = idx;
-                this->num_total_tasks = num_total_tasks;
-                this->taskid = taskid;
-            }
-
-            bool operator==(SleepingTask& a) {
-                return a.runnable == this->runnable && a.idx == this->idx && a.num_total_tasks == this->num_total_tasks;
-            }
-        };
-
-        struct Task {
-            IRunnable* runnable;
-            int num_total_tasks;
-
-            Task() {
-                this->runnable = NULL;
-                this->num_total_tasks = -1;
-            }
-
-            Task(IRunnable* runnable, int num_total_tasks) {
-                this->runnable = runnable;
-                this->num_total_tasks = num_total_tasks;
-            }
-        };
-    private:
-    ThreadSafeQueue<SleepingTask> q;
-    int num_threads;
-    thread* threads;
-
-    mutex mtx;
-    condition_variable cv;
-    int num_tasks_left;
-
-    int curId;
-    unordered_set<int> completed;
-    unordered_map<int, unordered_set<int>> dependencies;
-    unordered_map<int, Task> tasks;
-    mutex dependencies_mutex;
-
-    unordered_map<int, atomic<int>> remaining;
-    mutex remaining_mtx;
-
-    public:
 
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
@@ -170,6 +73,27 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+
+        struct Task {
+            IRunnable *runnable;
+            int idx;
+            int num_total_tasks;
+            TaskID id;
+        };
+
+    private:
+        atomic<bool> program_done, syncing;
+        atomic<int> job_counter;
+        mutex mut;
+        condition_variable jobs_done_cv, queue_empty_cv;
+        vector<thread> workers;
+        queue<Task> jobs;
+
+        TaskID current_id;
+        vector<int> jobs_left;
+        vector<int> remaining_dependencies;
+        vector<vector<TaskID>> dependencies;
+        vector<Task> tasks;
 };
 
 #endif

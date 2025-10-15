@@ -126,154 +126,140 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), q(SleepingTask(NULL, -1, 0, -1)) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
-    this->num_threads = num_threads;
-    threads = new thread[num_threads];
-    for (int i =0 ; i < num_threads; i++) {
-        threads[i] = thread(thread_fn, this);
+#define cout cout << "[" << this_thread::get_id() << "] "
+
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), program_done(false), syncing(false), job_counter(0), current_id(0) {
+    for (int i = 0; i < num_threads; i++) {
+        workers.emplace_back([this] {
+            while (true) {
+                Task job;
+                {
+                    unique_lock<mutex> lock(mut);
+                    if (syncing && job_counter == 0) {
+                        syncing = false;
+                        jobs_done_cv.notify_one();
+                    }
+
+                    queue_empty_cv.wait(lock, [this] {
+                        return program_done || !jobs.empty();
+                    });
+
+                    if (program_done && jobs.empty()) {
+                        return;
+                    }
+
+                    // cout << "job size: " << jobs.size() << endl;
+                    job = move(jobs.front());
+                    jobs.pop();
+
+                    if (job.idx == -1) {
+                        for (int i = 0; i < job.num_total_tasks; i++) {
+                            jobs.push({job.runnable, i, job.num_total_tasks, job.id});
+                        }
+                        // cout << "queued " << job.id << endl;
+                        continue;
+                    }
+                }
+
+                // cout << "started task " << job.id << ", idx " << job.idx << endl;
+                if (job.runnable == nullptr) {
+                    // cout << "!!! Task " << job.id << ", idx " << job.idx << " is bad" << endl;
+                    assert(false);
+                }
+                job.runnable->runTask(job.idx, job.num_total_tasks);
+                // cout << "ended task " << job.id << ", idx " << job.idx << endl;
+
+                job_counter.fetch_sub(1);
+                // cout << "now we have " << job_counter << " remaining jobs" << endl;
+                // cout << "we also have " << jobs.size() << " remaining tasks" << endl;
+
+                {
+                    unique_lock<mutex> lock(mut);
+                    for (int i = 0; i < current_id; i++) {
+                        if (jobs_left[i] > 0 && i == 256) {
+                             // cout << "job " << i << " still has " << jobs_left[i] << " tasks";
+                             // cout << " and " << remaining_dependencies[i] << " deps" << endl;
+                        }
+                    }
+
+                    TaskID id = job.id;
+                    if (--jobs_left[id] == 0) {
+                        // cout << "done with " << id << endl;
+                        for (TaskID child : dependencies[id]) {
+                            // cout << "child " << child << " with " << remaining_dependencies[child] << "endl";
+                            if (--remaining_dependencies[child] == 0) {
+                                jobs.push(tasks[child]);
+                                // cout << "pushed " << child << endl;
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
+
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    //
-    // TODO: CS149 student implementations may decide to perform cleanup
-    // operations (such as thread pool shutdown construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
-    q.push(SleepingTask(NULL, -1, 0, -1));
+    // cout << "Destroying..." << endl;
 
-    for (int i = 0; i < num_threads; i++) {
-        threads[i].join();
+    program_done = true;
+    queue_empty_cv.notify_all();
+
+    for (thread &worker : workers) {
+        worker.join();
     }
+    workers.clear();
 
-    delete[] threads;
-    cout <<" hmm " << endl;
+    // cout << "Destroyed" << endl;
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Parts A and B.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-    }
-}
-
-void TaskSystemParallelThreadPoolSleeping::thread_fn(TaskSystemParallelThreadPoolSleeping* self) {
-    while (true) {
-        SleepingTask val = self->q.pop();
-        cout << "got task " << endl;
-
-        if (val.runnable == NULL) {
-            return;
-        }
-
-        int id = val.taskid;
-
-        val.runnable->runTask(val.idx, val.num_total_tasks);
-        cout << "waiting on remaining_mtx lock " << endl;
-        self->remaining_mtx.lock();
-        cout << "got remaining_mtx lock " << endl;
-        if (--(self->remaining[id]) == 0) {
-            cout << "done! " << endl;
-            self->mtx.lock();
-            cout << "got main mtx " <<endl;
-            if (--self->num_tasks_left == 0) {
-                cout << "notiying " << endl;
-                 self->cv.notify_all();
-            }
-            cout << "unlocking main mtx " << endl;
-            self->mtx.unlock();
-
-            self->dependencies_mutex.lock();
-            cout << "got dependencies mtx " << endl;
-            for (auto it = self->dependencies.begin(); it != self->dependencies.end();) {
-                it->second.erase(id);
-
-                if (it->second.size() == 0) {
-                    Task t = self->tasks[it->first];
-                    int nextid = it->first;
-                    it = self->dependencies.erase(it);
-                    for (int i = 0; i < t.num_total_tasks; i++) {
-                        self->q.push(SleepingTask(t.runnable, i, t.num_total_tasks, nextid));
-                    }
-                } else {
-                    ++it;
-                }
-            }
-            self->dependencies_mutex.unlock();
-        }
-
-        self->remaining_mtx.unlock();
-    }
+    vector<TaskID> empty_deps;
+    runAsyncWithDeps(runnable, num_total_tasks, empty_deps);
+    sync();
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
+    unique_lock<mutex> lock(mut);
 
+    TaskID id = current_id++;
+    jobs_left.push_back(num_total_tasks);
+    remaining_dependencies.push_back(0);
+    dependencies.push_back({});
+    tasks.push_back({runnable, -1, num_total_tasks, id});
+    job_counter += num_total_tasks;
 
-    //
-    // TODO: CS149 students will implement this method in Part B.
-    //
-    mtx.lock();
-    int id = curId++;
-    num_tasks_left++;
-    mtx.unlock();
-
-    remaining_mtx.lock();
-    remaining[id] = num_total_tasks;
-    remaining_mtx.unlock();
-
-    unordered_set<int> thedeps;
-    dependencies_mutex.lock();
-    for (int i : deps) {
-        if (completed.find(i) != completed.end()) {
-            continue;
+    bool can_start = true;
+    for (TaskID parent : deps) {
+        if (jobs_left[parent] > 0) {
+            dependencies[parent].push_back(id);
+            can_start = false;
+            remaining_dependencies[id]++;
         }
-
-        thedeps.insert(i);
     }
 
-    if (thedeps.size() == 0) {
-        cout << "pushing in main " << endl;
-        for (int i = 0; i < num_total_tasks; i++) {
-            cout << "push " << endl;
-            q.push(SleepingTask(runnable, i, num_total_tasks, id));
-        }
-    } else {
-        dependencies[id] = move(thedeps);
-        Task t(runnable, num_total_tasks);
-        tasks[id] = t;
+    if (can_start) {
+        jobs.push(tasks.back());
+        queue_empty_cv.notify_one();
     }
 
-    dependencies_mutex.unlock();
+
+    // cout << "processed task " << id << " " << deps.size() << endl;
 
     return id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
+    syncing = true;
+    queue_empty_cv.notify_all();
 
-    //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
-    //
-    unique_lock<mutex> lock(mtx);
+    // cout << "waiting to sync..." << endl;
 
-    while (num_tasks_left != 0) {
-        cout << "waiting on sync lock" << endl;
-        cv.wait(lock);
-    }
-    cout << "DONE DIOFJ ODIJFO AISJD OJ " << endl;
-    return;
+    unique_lock<mutex> lock(mut);
+    jobs_done_cv.wait(lock, [this] {
+        return !syncing;
+    });
+    // cout << "done syncing!" << endl;
 }
