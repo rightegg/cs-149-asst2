@@ -1402,3 +1402,60 @@ TestResults strictGraphDepsMedium(ITaskSystem* t) {
 TestResults strictGraphDepsLarge(ITaskSystem* t) {
     return strictGraphDepsTestBase(t,1000,20000,0);
 }
+
+/*
+ * Generates a graph with fully connected layers.
+ */
+TestResults connectedLayeredGraph(ITaskSystem *t) {
+    int num_layers = 20;
+    int sync_at = 10;
+    int tasks_per_layer = 100;
+    
+    int n = num_layers * tasks_per_layer;
+
+    bool *done = new bool[n]();
+    TaskID *task_ids = new TaskID[n];
+
+    std::vector<int> idx_deps[n];
+    std::vector<bool*> flag_deps[n];
+    std::vector<TaskID> task_deps[n];
+
+    for (int layer = 1; layer < num_layers; layer++) {
+        for (int cur_task = 0; cur_task < tasks_per_layer; cur_task++) {
+            int cur = layer * tasks_per_layer + cur_task;
+            for (int prev_task = 0; prev_task < tasks_per_layer; prev_task++) {
+                int prv = (layer - 1) * tasks_per_layer + prev_task;
+
+                idx_deps[cur].push_back(prv);
+                flag_deps[cur].push_back(done + prv);
+            }
+        }
+    }
+
+    std::vector<IRunnable*> tasks;
+    for (int i = 0; i < n; i++) {
+        tasks.push_back(new StrictDependencyTask(flag_deps[i], done + i));
+    }
+
+    double start_time = CycleTimer::currentSeconds();
+    for (int i = 0; i < n; i++) {
+        if (i == sync_at * tasks_per_layer) {
+            sync(); // test syncing in the middle of the graph
+        }
+
+        for (int idx : idx_deps[i]) {
+            task_deps[i].push_back(task_ids[idx]);
+        }
+
+        task_ids[i] = t->runAsyncWithDeps(tasks[i], (rand() % 15) + 1, task_deps[i]);
+    }
+    t->sync();
+    t->sync(); // test empty sync
+    double end_time = CycleTimer::currentSeconds();
+
+    TestResults result;
+    result.passed = done[n - 1];
+    result.time = end_time - start_time;
+
+    return result;
+}
