@@ -115,6 +115,10 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 
                 {
                     unique_lock<mutex> lock(mut);
+                    if (counter.load() == 0) {
+                        cv.notify_one();
+                    }
+
                     if (!jobs.empty()) {
                         job = move(jobs.front());
                         jobs.pop();
@@ -124,15 +128,7 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 
                 if (found_job) {
                     job.runnable->runTask(job.idx, job.num_total_tasks);
-
-                    {
-                        unique_lock<mutex> lock(mut);
-                        if (counter.fetch_sub(1) == 1) {
-                            cv.notify_one();
-                        }
-                    }
-                } else {
-                    this_thread::yield();
+                    counter.fetch_sub(1);
                 }
             }
         });
